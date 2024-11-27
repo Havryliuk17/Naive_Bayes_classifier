@@ -1,0 +1,510 @@
+---
+editor_options:
+  markdown:
+    wrap: 72
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Probability and Statistics
+
+# Lab Assignment 1: Naive Bayes Classifier
+
+## Work breakdown
+
+-   *Vitalii Sharaiev*: conditional probability function, predict,
+    score.
+
+-   *Olga Havryliuk*: all additional function, predict.
+
+-   *Mariia Ivanchenko*: prepare data, vizualization, predict.
+
+## Introduction
+
+**Bayes formula:**
+$$\mathsf{P}(\mathrm{class}\mid \mathrm{observation})=\frac{\mathsf{P}(\mathrm{observation}\mid\mathrm{class})\mathsf{P}(\mathrm{class})}{\mathsf{P}(\mathrm{observation})}$$
+
+Under the strong independence assumption, one can calculate
+$\mathsf{P}(\mathrm{observation} \mid \mathrm{class})$ as
+$$\mathsf{P}(\mathrm{observation}) = \prod_{i=1}^{n} \mathsf{P}(\mathrm{feature}_i), \qquad \mathsf{P}(\mathrm{observation} \mid \mathrm{class}) = \prod_{i=1}^{n} \mathsf{P}(\mathrm{feature}_i \mid \mathrm{class}),$$
+where $n$ is the total number of features describing a given
+observation. Thus, $\mathsf{P}(\mathrm{class}|\mathrm{observation})$ now
+can be calculated as
+
+$$\mathsf{P}(\mathrm{class} \mid \mathrm{\mathrm{observation}}) = \mathsf{P}(\mathrm{class})\times \prod_{i=1}^{n}\frac{\mathsf{P}(\mathrm{feature}_i\mid \mathrm{class})}{\mathsf{P}(\mathrm{feature}_i)}\tag{1}$$
+
+## Data description
+
+This data set contains data of American news: a headline and an abstract
+of the article. Each piece of news is classified as fake or credible. We
+will classify the news from test.csv as credible or fake.
+
+```{r}
+# list of libraries that we used
+library(dplyr)
+library(tidyr)
+library(tokenizers)
+library(tidytext) 
+library(readr)
+library(ggplot2)
+library(wordcloud2)
+library(caret) 
+```
+
+## Outline of the work
+
+1.  **Data pre-processing** (includes removing punctuation marks and
+    stop words, representing each message as a bag-of-words)
+2.  **Data visualization** (it's time to plot your data!)
+3.  **Classifier implementation** (using the training set, calculate all
+    the conditional probabilities in formula (1) and then use those to
+    predict classes for messages in the testing set)
+4.  **Measurements of effectiveness of your classifier** (accuracy,
+    precision and recall curves, F1 score metric etc)
+5.  **Conclusions**
+
+## Data pre-processing
+
+-   Read the *.csv* data files.
+-   Сlear your data from punctuation or other unneeded symbols.
+-   Clear you data from stop words. You don't want words as is, and, or
+    etc. to affect your probabilities distributions, so it is a wise
+    decision to get rid of them. Find list of stop words in the cms
+    under the lab task.
+-   Represent each test message as its bag-of-words. Here:
+    <https://machinelearningmastery.com/gentle-introduction-bag-words-model/>
+    you can find general introduction to the bag-of-words model and
+    examples on to create it.
+-   It is highly recommended to get familiar with R dataframes, it would
+    make the work much easier to do.
+-   Useful links:
+    -   <https://steviep42.github.io/webscraping/book/bagofwords.html#tidytext> -
+        example of using *tidytext* to count frequencies of the words.
+    -   Basics of Text Mining in R:
+        <http://rstudio-pubs-static.s3.amazonaws.com/256588_57b585da6c054349825cba46685d8464.html>
+        . Note that it also includes an example on how to create a bag
+        of words from your text document.
+
+### Reading csv files
+
+```{r}
+test_path <- "test.csv"
+train_path <- "train.csv"
+stop_words <- "srop_words.txt"
+cleanTrainPath <- "cleaned.csv"
+train <-  read.csv(file = train_path, stringsAsFactors = FALSE)
+test <-  read.csv(file = test_path, stringsAsFactors = FALSE)
+clean <- read.csv(file = cleanTrainPath, stringsAsFactors = FALSE)
+```
+
+### Preparing our training file in order to use it during training our model,
+
+Before feeding the data into the classifier, the following preprocessing
+steps were taken:
+
+-   Tokenizing the text data into individual words
+
+-   Removing punctuation, numbers, and other non-word characters
+
+-   Converting text to lowercase for uniformity.
+
+```{r}
+clean_text <- function(stop_words_file, text_file_path){
+  text <- read.csv(file = train_path, stringsAsFactors = FALSE)
+  stop_words <- unlist(strsplit(read_file("stop_words.txt"), "\n"))
+  pattern <- paste(stop_words, collapse = "|")
+  for (i in 1:nrow(text)) {
+    text$Body[i] <- gsub(paste0("\\b(", pattern, ")\\b"), "", text$Body[i], ignore.case = TRUE) 
+    text$Body[i] <- gsub(pattern = "([[:punct:]])", "", text$Body[i], ignore.case = TRUE)
+    text$Body[i] <- gsub(pattern = "[0-9]", "", text$Body[i], ignore.case = TRUE)
+  }
+  write.csv(text, "cleaned.csv")
+}
+cleanTrain <- clean_text(stop_words, train_path)
+```
+
+## Classifier implementation
+
+**1. Class Fields:**\
+- **data:** This field holds the entirety of our dataset\
+- **labels:** An array comprising two labels: 'fake' and 'credible'\
+- **fake_article_probability:** Probability that a news article is fake\
+- **credible_article_probability:** Probability that a news article is
+credible\
+- **all_vocabulary:** A data frame that encapsulates all word
+occurrences across articles\
+- **fake_words_dictionary:** A data frame detailing occurrences of words
+in fake news\
+- **credible_words_dictionary:** A data frame detailing occurrences of
+words in credible news
+
+**2. Class Functions:**\
+- **fit(X, Y):** Processes data and labels to set up the model\
+- **probability_of_one_word(word, label):** Calculates how likely a word
+fits the 'credible' or 'fake' category. - **predict(message):** Uses the
+Bayes formula to determine the credibility of a message\
+- **score(X_test):** Produces predictions to help assess the model's
+performance.
+
+```{r}
+
+naiveBayes <- setRefClass("naiveBayes",
+                          
+                          # Class Fields
+                          fields = list(
+                            data = "data.frame",
+                            dataForTest = 'data.frame',
+                            dataSetWithPrediction = "data.frame",
+                            lables = "vector",
+                            cleaned_data = "data.frame",
+                            credible_words = "list",
+                            fake_words = "list",
+                            laplaceConst = "numeric",
+                            total_credible_words = "numeric",
+                            total_fake_words = "numeric",
+                            total_fake_class = "numeric",
+                            total_credible_class = "numeric",
+                            
+                            cred_cond_prob = "list",
+                            fake_cond_prob = "list",
+                            words = "numeric",
+                            
+                            accuracy = "numeric",
+                            recall = "numeric",
+                            f1_score = "numeric",
+                            precision = "numeric"
+                          ),
+                          
+                          methods = list(
+                            
+                            # Transforms the main data to get 'Label' and 'splitted' columns
+                            text_dataframe = function(main) {
+                              tidy_text <- main %>%
+                                unnest_tokens(splitted, Body, token="words")
+                              
+                              return(tidy_text[, c("Label", "splitted")])
+                            },
+                            
+                            # Counts unique word occurrences in the dataset
+                            words_occurrences = function(main) {
+                              tidy_text <- main %>%
+                                unnest_tokens(splitted, Body, token="words")
+                              distinct_words <- unique(tidy_text$splitted)
+                              return(length(distinct_words))
+                            },
+                            
+                            # Counts occurrences of words labeled as 'credible'
+                            credible_count = function(df) {  
+                              credible_word_counts_df <- df %>%
+                                dplyr::filter(Label == lables[1]) %>%
+                                count(splitted, sort = TRUE)
+                              result_dict <- as.list(setNames(credible_word_counts_df$n, credible_word_counts_df$splitted))
+                              return(result_dict)
+                            },
+                            
+                            # Counts occurrences of words labeled as 'fake'
+                            fake_count = function(df) {   
+                              fake_word_counts_df <- df %>%     
+                                dplyr::filter(Label == lables[2]) %>%     
+                                count(splitted, sort = TRUE)      
+                              result_dict <- as.list(setNames(fake_word_counts_df$n, fake_word_counts_df$splitted))      
+                              return(result_dict) 
+                            }, 
+                            
+                            # Returns a list of word counts from a given message
+                            words_summary = function(text) {   
+                              tidy_text <- unnest_tokens(data.frame(text=text), 'splitted', 'text', token="words")   
+                              word_counts <- tidy_text %>% count(splitted, sort=TRUE)   
+                              result_dict <- as.list(setNames(word_counts$n, word_counts$splitted))      
+                              return(result_dict)
+                            },
+                            
+                            # Processes data to initialize the model
+                            fit = function() {
+                              
+                              cleaned_data <<- text_dataframe(data)
+                              words <<- words_occurrences(data)
+                              
+                              credible_words <<- credible_count(cleaned_data)
+                              fake_words <<- fake_count(cleaned_data)
+                              
+                              total_credible_words <<- sum(unlist(credible_words))
+                              total_fake_words <<- sum(unlist(fake_words))
+                              
+                              total_fake_class <<- sum(data$Label == lables[2])
+                              total_credible_class <<- sum(data$Label == lables[1])
+                            },
+                            
+                            # Computes the conditional probability of a word given a class (credible or fake)
+                            conditionalProbability = function(word, specificClass) {
+                              if (specificClass == 1) {
+                                totalNumberOfOccurenceInClassOfWord <- ifelse(is.null(credible_words[[word]]), 0, credible_words[[word]])
+                                totalClassWords <- total_credible_words
+                              } else {
+                                totalNumberOfOccurenceInClassOfWord <- ifelse(is.null(fake_words[[word]]), 0, fake_words[[word]])
+                                totalClassWords <- total_fake_words
+                              } 
+                              numerator <- totalNumberOfOccurenceInClassOfWord + 1
+                              denominator <- totalClassWords + words
+                              
+                              probability <- numerator / denominator
+                              
+                              return(probability)
+                            },
+                            
+                            
+                            # Predicts the credibility of a message
+                            predict = function(message) {
+                              message <- gsub('[[:punct:]0-9 ]+', ' ', message)
+                              message <- tolower(message)
+                              
+                              fakeArticle <- (total_fake_class) / (total_fake_class + total_credible_class)
+                              credibleArticle <- 1 - fakeArticle
+                              
+                              message_summary <- words_summary(message)
+                              
+                              for (key in names(message_summary)) {
+                                fakeArticle <-fakeArticle * conditionalProbability(key, 0)  * 10000 
+                                credibleArticle <- credibleArticle * conditionalProbability(key, 1)  * 10000
+                              }
+                              if (fakeArticle > credibleArticle) {
+                                return(lables[2])
+                              } else {
+                                return(lables[1])
+                              }
+                              
+                            },
+                            
+                            # Adds a prediction column to the dataset
+                            createDataWithPredictions = function() {
+                              dataForTest["Prediction"] <<- apply(dataForTest['Body'],1, FUN = .self$predict)
+                              dataSetWithPrediction <<- dataForTest
+                            },
+                            
+                            
+                            # Scores the model
+                            score = function(){
+                              dataSetWithPrediction <<- createDataWithPredictions()
+                              actual <- dataSetWithPrediction$Label
+                              predicted <- dataSetWithPrediction$Prediction
+                              
+                              TP <- sum(actual == lables[1] & predicted == lables[1])
+                              FP <- sum(actual == lables[2] & predicted == lables[1])
+                              TN <- sum(actual == lables[2] & predicted == lables[2])
+                              FN <- sum(actual == lables[1] & predicted == lables[2])
+                              
+                              accuracy <<- (TP + TN) / (TP + FP + TN + FN)
+                              recall <<- TP / (TP + FN)
+                              precision <<- TP / (TP + FP)
+                              f1_score <<- 2 * (precision * recall) / (precision + recall)
+                              cat("Accuracy = ", accuracy, "\n")
+                              cat("Recall = ", recall, "\n")
+                              cat("Precision = ", precision, "\n")
+                              cat("F1 Score = ", f1_score)
+                            }
+                          )
+)
+
+lables <- unique(train$Label)
+model <- naiveBayes$new(data=clean, dataForTest = test, lables=lables)
+model$fit()
+model$score()
+
+```
+
+# Visualization
+
+## First of all we decided to visualise the distribution of news labels in the dataset
+
+The chart provides a visual representation of the proportion of "Fake"
+news relative to "Credible" news. This visualization helps in
+understanding the balance (or imbalance) of the dataset in terms of news
+credibility. An imbalanced dataset could influence the training and
+performance of the machine learning model.
+
+```{r}
+viz_lables_before = function() {
+  slices <- c(model$total_fake_class, model$total_credible_class) # total_fake_class, total_credible_class
+  lbls <- paste(c("Fake: ", "Credible: "), slices)
+  pie(slices, labels = lbls, main = "Chart of Labels")
+}
+
+viz_lables_before()
+```
+
+## Visualization of top words in fake news
+
+This word cloud visualizes the words most frequently associated with
+"Fake" news.
+
+```{r}
+
+viz_fake_words = function() {
+  wordcloud2(data = data.frame(word = names(model$fake_words), freq = unlist(model$fake_words)), color = "red")
+}
+viz_fake_words()
+
+```
+
+## Visualization of top words in credible news
+
+This word cloud visualizes the words most frequently associated with
+"Credible" news.
+
+```{r}
+viz_credible_words = function() {
+  wordcloud2(data = data.frame(word = names(model$credible_words), freq = unlist(model$credible_words)), color = "green")
+}
+
+viz_credible_words()
+```
+
+### This bar plot shows the number of credible messages predicted as credible in green and the number of credible messages predicted as fake in red.
+
+```{r}
+actual <- model$dataSetWithPrediction$Label
+predicted <- model$dataSetWithPrediction$Prediction
+
+cm <- confusionMatrix(as.factor(predicted), as.factor(actual), positive = lables[1])
+print(cm)
+actual_credible <- sum(actual == lables[1])
+predicted_credible <- sum(predicted == lables[1] & actual == lables[1])
+predicted_as_fake <- actual_credible - predicted_credible
+
+values <- c(predicted_credible, predicted_as_fake)
+labels <- c("Predicted Credible", "Predicted as Fake")
+
+barplot(values, names.arg = labels, main = "Credible Messages Predictions", col = c("green", "red"), ylim = c(0, max(values) + 10))
+legend("topright", c("Predicted Credible", "Predicted as Fake"), fill = c("green", "red"))
+
+```
+
+### This bar plot shows the number of fake messages predicted as fake in red and the number of fake messages predicted as credible in green
+
+```{r}
+actual <- model$dataSetWithPrediction$Label
+predicted <- model$dataSetWithPrediction$Prediction
+
+cm <- confusionMatrix(as.factor(predicted), as.factor(actual), positive = lables[2])
+print(cm)
+actual_fake <- sum(actual == lables[2])
+predicted_fake <- sum(predicted == lables[2] & actual == lables[2])
+predicted_as_credible <- actual_fake - predicted_fake
+
+values <- c(predicted_fake, predicted_as_credible)
+labels <- c("Predicted Fake", "Predicted as Credible")
+
+barplot(values, names.arg = labels, main = "Fake Messages Predictions", col = c("red", "green"), ylim = c(0, max(values) + 10))
+legend("topright", c("Predicted Fake", "Predicted as Credible"), fill = c("red", "green"))
+
+
+```
+
+### 'Chart of Prediction' visualizes the distribution of news articles as predicted by the Naive Bayes classifier and 'Chart of Labels' visualizes the actual distribution
+
+```{r}
+viz_lables_after = function() {
+  x <- 0
+  y <- 0
+  for(i in model$dataSetWithPrediction$Prediction){
+    if (i == "credible"){
+      x <- x +1
+    } else{
+      y <- y+1
+    }
+  }
+  slices <- c(y, x) # total_fake_class, total_credible_class
+  lbls <- paste(c("Fake: ", "Credible: "), slices)
+  pie(slices, labels = lbls, main = "Chart of Prediction")
+}
+
+viz_lables_aftL = function() {
+  x <- 0
+  y <- 0
+  for(i in model$dataSetWithPrediction$Label){
+    if (i == "credible"){
+      x <- x +1
+    } else{
+      y <- y+1
+    }
+  }
+  slices <- c(y, x) # total_fake_class, total_credible_class
+  lbls <- paste(c("Fake: ", "Credible: "), slices)
+  pie(slices, labels = lbls, main = "Chart of Labels(true)")
+}
+
+viz_lables_after()
+
+viz_lables_aftL()
+```
+
+# Accuracy **estimation**
+
+Estimates accuracy of the model based on the given DF. First of all, we
+calculate True Positive (tp), False Negative (fn) and False Positive
+(fp) values in score method of naiveBayes. To calculate accuracy we use
+formula (tp / (tp + fp)) (\~95,01%) Sensitivity is calculated by the
+following formula (tp / (tp + fn)) (\~98,64) F1 measure is calculated
+given ( \* (accurency \* sensitivity) / (accurency + sensitivity))
+(\~96,79%)
+
+```{r}
+score = function(){
+    dataSetWithPrediction <<- createDataWithPredictions()
+    actual <- dataSetWithPrediction$Label
+    predicted <- dataSetWithPrediction$Prediction
+    
+    TP <- sum(actual == lables[1] & predicted == lables[1])
+    FP <- sum(actual == lables[2] & predicted == lables[1])
+    TN <- sum(actual == lables[2] & predicted == lables[2])
+    FN <- sum(actual == lables[1] & predicted == lables[2])
+    
+    accuracy <<- (TP + TN) / (TP + FP + TN + FN)
+    recall <<- TP / (TP + FN)
+    precision <<- TP / (TP + FP)
+    f1_score <<- 2 * (precision * recall) / (precision + recall)
+  }
+```
+
+## Conclusions
+
+#### Implementation method
+
+At first we had to prepare our data. The data is cleaned by removing
+punctuation, numbers, and stop words. The result is saved in
+*cleaned.csv* and all further training we perform using this cleaned
+file.
+
+Then we had to implement The Naive Bayes Classifier. At first we have to
+create bag-of-words in our *fit* function, we set all necessary
+attributes there. Then we have *predict* function, which calculates
+probability that word belongs to "fake" or "credible" class, calculate
+words frequencies in message and estimate it is "fake" or "credible"
+according to conditional probability. Last step is to score our results.
+
+Also, visualization. They are provided to understand the data
+distribution, word frequencies, and predictions.
+
+The model's accuracy, sensitivity, and F1 score are calculated to assess
+its performance.
+
+#### Pros&Cons
+
+*Pros*
+
+-   The Naive Bayes Classifier is straightforward and easy to
+    understand, making it suitable for text classification tasks.
+
+-   It can handle large datasets efficiently due to its simplicity.
+
+*Cons*
+
+-   The method assumes that words are conditionally independent, which
+    may not hold true in some real-world scenarios.
+
+-   Naive Bayes may not capture complex relationships between words and
+    may not perform as well as more sophisticated models like deep
+    learning approaches.
